@@ -1,0 +1,23 @@
+[project]
+name = "distance-correlation-plugin"
+version = "0.1.0"
+description = "Distance correlation analysis for multivariate targets"
+authors = [
+    {name = "Toan Phung", email = "tphung001@dundee.ac.uk"}
+]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "click (>=8.0.0,<9.0.0)",
+    "numpy (>=1.24.0,<3.0.0)",
+    "pandas (>=2.0.0,<4.0.0)",
+    "statsmodels (>=0.14.0,<0.15.0)",
+    "scikit-learn (>=1.3.0,<2.0.0)",
+    "plotly (>=5.18.0,<7.0.0)",
+    "dcor (>=0.6,<1.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
