@@ -3,14 +3,108 @@
 import os
 
 import click
-import dcor
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from scipy.spatial.distance import pdist, squareform
 from sklearn.impute import SimpleImputer, KNNImputer
 from statsmodels.stats.multitest import multipletests
+
+
+def _double_center(D: np.ndarray) -> np.ndarray:
+    """
+    Double center a distance matrix.
+
+    :param D: Square distance matrix.
+    :return: Double-centered matrix.
+    """
+    n = D.shape[0]
+    row_mean = D.mean(axis=1, keepdims=True)
+    col_mean = D.mean(axis=0, keepdims=True)
+    grand_mean = D.mean()
+    return D - row_mean - col_mean + grand_mean
+
+
+def _distance_covariance(X: np.ndarray, Y: np.ndarray) -> float:
+    """
+    Calculate distance covariance between X and Y.
+
+    :param X: First array (n_samples,) or (n_samples, n_features).
+    :param Y: Second array (n_samples,) or (n_samples, n_features).
+    :return: Distance covariance value.
+    """
+    n = len(X)
+    if n < 2:
+        return 0.0
+
+    X = np.atleast_2d(X.reshape(-1, 1) if X.ndim == 1 else X)
+    Y = np.atleast_2d(Y.reshape(-1, 1) if Y.ndim == 1 else Y)
+
+    D_X = squareform(pdist(X, metric='euclidean'))
+    D_Y = squareform(pdist(Y, metric='euclidean'))
+
+    A = _double_center(D_X)
+    B = _double_center(D_Y)
+
+    dcov_sq = (A * B).sum() / (n * n)
+    return np.sqrt(max(dcov_sq, 0))
+
+
+def _distance_variance(X: np.ndarray) -> float:
+    """
+    Calculate distance variance of X.
+
+    :param X: Array (n_samples,) or (n_samples, n_features).
+    :return: Distance variance value.
+    """
+    return _distance_covariance(X, X)
+
+
+def distance_correlation(X: np.ndarray, Y: np.ndarray) -> float:
+    """
+    Calculate distance correlation between X and Y.
+
+    :param X: First array.
+    :param Y: Second array.
+    :return: Distance correlation (0 to 1).
+    """
+    dcov = _distance_covariance(X, Y)
+    dvar_X = _distance_variance(X)
+    dvar_Y = _distance_variance(Y)
+
+    if dvar_X <= 0 or dvar_Y <= 0:
+        return 0.0
+
+    return dcov / np.sqrt(dvar_X * dvar_Y)
+
+
+def distance_covariance_test(
+    X: np.ndarray,
+    Y: np.ndarray,
+    num_resamples: int = 199
+) -> tuple[float, float]:
+    """
+    Permutation test for distance covariance independence.
+
+    :param X: First array.
+    :param Y: Second array.
+    :param num_resamples: Number of permutations.
+    :return: Tuple of (statistic, p-value).
+    """
+    n = len(X)
+    observed_dcov = _distance_covariance(X, Y)
+
+    count = 0
+    for _ in range(num_resamples):
+        perm_idx = np.random.permutation(n)
+        perm_dcov = _distance_covariance(X, Y[perm_idx])
+        if perm_dcov >= observed_dcov:
+            count += 1
+
+    pvalue = (count + 1) / (num_resamples + 1)
+    return observed_dcov, pvalue
 
 
 def read_data_file(file_path: str) -> pd.DataFrame:
@@ -155,14 +249,14 @@ def calculate_distance_correlation(
                     'Target_Columns': ','.join(target_cols)
                 })
             else:
-                corr = dcor.distance_correlation(x_valid, target_valid)
-                test_result = dcor.independence.distance_covariance_test(
+                corr = distance_correlation(x_valid, target_valid)
+                _, pvalue = distance_covariance_test(
                     x_valid, target_valid, num_resamples=num_resamples
                 )
                 results_list.append({
                     'Protein': protein,
                     'Distance_Correlation': corr,
-                    'P_Value': test_result.pvalue,
+                    'P_Value': pvalue,
                     'N_Samples': n,
                     'Target_Columns': ','.join(target_cols)
                 })
