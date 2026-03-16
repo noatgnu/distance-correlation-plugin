@@ -159,6 +159,74 @@ def impute_data(
     return pd.DataFrame(imputed_values, index=data.index, columns=data.columns)
 
 
+def _compute_distance_correlation_vectorized(
+    X: np.ndarray,
+    target_matrix: np.ndarray,
+    num_resamples: int = 199
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Vectorized distance correlation computation for all proteins.
+
+    Optimizations:
+    - Precompute target distance matrix once (same for all proteins)
+    - Precompute permutation indices
+    - Batch process proteins
+
+    :param X: Data matrix (n_proteins, n_samples).
+    :param target_matrix: Target matrix (n_samples, n_targets).
+    :param num_resamples: Number of permutations for p-value.
+    :return: Tuple of (correlations, p_values) arrays.
+    """
+    n_proteins, n_samples = X.shape
+
+    target_Y = target_matrix.reshape(-1, 1) if target_matrix.ndim == 1 else target_matrix
+    D_Y = squareform(pdist(target_Y, metric='euclidean'))
+    B_centered = _double_center(D_Y)
+    dvar_Y = (B_centered * B_centered).sum() / (n_samples * n_samples)
+    dvar_Y = np.sqrt(max(dvar_Y, 0))
+
+    perm_indices = [np.random.permutation(n_samples) for _ in range(num_resamples)]
+    B_perms = [B_centered[np.ix_(perm, perm)] for perm in perm_indices]
+
+    correlations = np.zeros(n_proteins)
+    pvalues = np.zeros(n_proteins)
+
+    for i in range(n_proteins):
+
+        x = X[i]
+
+        if np.std(x) == 0:
+            correlations[i] = np.nan
+            pvalues[i] = np.nan
+            continue
+
+        x_2d = x.reshape(-1, 1)
+        D_X = squareform(pdist(x_2d, metric='euclidean'))
+        A_centered = _double_center(D_X)
+
+        dcov_sq = (A_centered * B_centered).sum() / (n_samples * n_samples)
+        dcov = np.sqrt(max(dcov_sq, 0))
+
+        dvar_X_sq = (A_centered * A_centered).sum() / (n_samples * n_samples)
+        dvar_X = np.sqrt(max(dvar_X_sq, 0))
+
+        if dvar_X <= 0 or dvar_Y <= 0:
+            correlations[i] = 0.0
+        else:
+            correlations[i] = dcov / (dvar_X * dvar_Y)
+
+        count = 0
+        for B_perm in B_perms:
+            perm_dcov_sq = (A_centered * B_perm).sum() / (n_samples * n_samples)
+            perm_dcov = np.sqrt(max(perm_dcov_sq, 0))
+            if perm_dcov >= dcov:
+                count += 1
+
+        pvalues[i] = (count + 1) / (num_resamples + 1)
+
+    return correlations, pvalues
+
+
 def calculate_distance_correlation(
     data: pd.DataFrame,
     annotation: pd.DataFrame,
@@ -226,48 +294,34 @@ def calculate_distance_correlation(
 
     data_subset = impute_data(data_subset, imputation, knn_neighbors)
 
+    X = data_subset.values.astype(float)
+    proteins = data_subset.index.tolist()
+    n_samples = X.shape[1]
+
+    has_nan = np.isnan(X).any(axis=1)
+    valid_proteins_mask = ~has_nan & (np.std(X, axis=1) > 0)
+
+    correlations = np.full(len(proteins), np.nan)
+    pvalues = np.full(len(proteins), np.nan)
+
+    valid_indices = np.where(valid_proteins_mask)[0]
+    if len(valid_indices) > 0:
+        X_valid = X[valid_indices]
+        corrs, pvals = _compute_distance_correlation_vectorized(
+            X_valid, target_matrix, num_resamples
+        )
+        correlations[valid_indices] = corrs
+        pvalues[valid_indices] = pvals
+
     results_list = []
-    for protein, values in data_subset.iterrows():
-        x = values.values.astype(float)
-
-        mask = ~np.isnan(x)
-        for tc in target_cols:
-            target_vals = annotation[annotation[sample_column_name].isin(valid_samples)][tc].values
-            mask = mask & ~np.isnan(target_vals)
-
-        x_valid = x[mask]
-        target_valid = target_matrix[mask]
-        n = len(x_valid)
-
-        if n >= 3:
-            if np.std(x_valid) == 0:
-                results_list.append({
-                    'Protein': protein,
-                    'Distance_Correlation': np.nan,
-                    'P_Value': np.nan,
-                    'N_Samples': n,
-                    'Target_Columns': ','.join(target_cols)
-                })
-            else:
-                corr = distance_correlation(x_valid, target_valid)
-                _, pvalue = distance_covariance_test(
-                    x_valid, target_valid, num_resamples=num_resamples
-                )
-                results_list.append({
-                    'Protein': protein,
-                    'Distance_Correlation': corr,
-                    'P_Value': pvalue,
-                    'N_Samples': n,
-                    'Target_Columns': ','.join(target_cols)
-                })
-        else:
-            results_list.append({
-                'Protein': protein,
-                'Distance_Correlation': np.nan,
-                'P_Value': np.nan,
-                'N_Samples': n,
-                'Target_Columns': ','.join(target_cols)
-            })
+    for i, protein in enumerate(proteins):
+        results_list.append({
+            'Protein': protein,
+            'Distance_Correlation': correlations[i],
+            'P_Value': pvalues[i],
+            'N_Samples': n_samples,
+            'Target_Columns': ','.join(target_cols)
+        })
 
     return pd.DataFrame(results_list)
 
@@ -430,14 +484,36 @@ def generate_volcano_plot(
     output_dir: str,
     alpha: float = 0.05,
     suffix: str = "",
-    title_suffix: str = ""
+    title_suffix: str = "",
+    use_adjusted_pvalue: bool = True
 ):
-    """Generate volcano plot (distance correlation vs -log10 p-value)."""
+    """
+    Generate volcano plot (distance correlation vs -log10 p-value).
+
+    :param results: DataFrame with correlation results.
+    :param output_dir: Output directory path.
+    :param alpha: Significance threshold.
+    :param suffix: Filename suffix.
+    :param title_suffix: Title suffix for the plot.
+    :param use_adjusted_pvalue: If True, use Q_Value for significance cutoff; if False, use P_Value.
+    """
     plot_df = results.copy()
-    plot_df['neg_log10_pvalue'] = -np.log10(plot_df['P_Value'].clip(lower=1e-300))
+
+    if use_adjusted_pvalue:
+        pvalue_col = 'Q_Value'
+        y_label = '-log10(Adjusted P-value)'
+        plot_type = 'adjusted'
+        significance_col = plot_df['Q_Value'].fillna(1)
+    else:
+        pvalue_col = 'P_Value'
+        y_label = '-log10(P-value)'
+        plot_type = 'raw'
+        significance_col = plot_df['P_Value'].fillna(1)
+
+    plot_df['neg_log10_pvalue'] = -np.log10(plot_df[pvalue_col].clip(lower=1e-300))
 
     plot_df['Status'] = np.where(
-        plot_df['Significant'],
+        significance_col < alpha,
         'Significant',
         'Not Significant'
     )
@@ -447,7 +523,8 @@ def generate_volcano_plot(
         'Not Significant': '#95a5a6'
     }
 
-    title = 'Volcano Plot: Distance Correlation'
+    pvalue_label = "Adjusted P-value" if use_adjusted_pvalue else "P-value"
+    title = f'Volcano Plot: Distance Correlation ({pvalue_label} cutoff)'
     if title_suffix:
         title = f'{title} - {title_suffix}'
 
@@ -471,12 +548,12 @@ def generate_volcano_plot(
         y=-np.log10(alpha),
         line_dash="dash",
         line_color="gray",
-        annotation_text=f"p = {alpha}"
+        annotation_text=f"{pvalue_label} = {alpha}"
     )
 
     fig.update_layout(
         xaxis_title='Distance Correlation',
-        yaxis_title='-log10(P-value)',
+        yaxis_title=y_label,
         template='plotly_white',
         width=900,
         height=700
@@ -484,7 +561,10 @@ def generate_volcano_plot(
 
     fig.update_traces(marker=dict(size=6, opacity=0.7))
 
-    filename = f"volcano_plot{suffix}.html" if suffix else "volcano_plot.html"
+    if suffix:
+        filename = f"volcano_plot_{plot_type}{suffix}.html"
+    else:
+        filename = f"volcano_plot_{plot_type}.html"
     fig.write_html(os.path.join(output_dir, filename))
 
 
@@ -524,9 +604,7 @@ def main(
     data = read_data_file(input_file)
     annotation = read_data_file(annotation_file)
     sample_column_name = get_sample_column_name(annotation)
-
     target_col_list = [t.strip() for t in target_cols.split(",")]
-
     results = calculate_distance_correlation(
         data=data,
         annotation=annotation,
@@ -540,7 +618,8 @@ def main(
 
     results = apply_fdr_correction(results, alpha=alpha)
 
-    generate_volcano_plot(results, output_dir, alpha=alpha)
+    generate_volcano_plot(results, output_dir, alpha=alpha, use_adjusted_pvalue=True)
+    generate_volcano_plot(results, output_dir, alpha=alpha, use_adjusted_pvalue=False)
     generate_ranked_bar_plot(results, output_dir)
     generate_scatter_plots(data, annotation, results, index_col, target_col_list, output_dir)
 
@@ -571,7 +650,16 @@ def main(
                     output_dir,
                     alpha=alpha,
                     suffix=suffix,
-                    title_suffix=str(group)
+                    title_suffix=str(group),
+                    use_adjusted_pvalue=True
+                )
+                generate_volcano_plot(
+                    group_results,
+                    output_dir,
+                    alpha=alpha,
+                    suffix=suffix,
+                    title_suffix=str(group),
+                    use_adjusted_pvalue=False
                 )
 
                 group_results['Group'] = group

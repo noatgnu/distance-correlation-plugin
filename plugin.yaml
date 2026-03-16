@@ -77,11 +77,11 @@ inputs:
     label: "Permutation Resamples"
     type: "number"
     required: false
-    default: 199
-    min: 99
+    default: 99
+    min: 19
     max: 999
-    step: 100
-    description: "Number of resamples for permutation test p-value calculation."
+    step: 10
+    description: "Number of resamples for permutation test p-value calculation. Lower values are faster but less precise."
 
   - name: "alpha"
     label: "Significance Level"
@@ -113,11 +113,17 @@ outputs:
     format: "tsv"
     description: "Filtered results showing only significant correlations."
 
-  - name: "volcano_plot"
-    path: "volcano_plot.html"
+  - name: "volcano_plot_adjusted"
+    path: "volcano_plot_adjusted.html"
     type: "html"
     format: "html"
-    description: "Volcano plot showing distance correlation vs significance."
+    description: "Volcano plot using FDR-adjusted p-values (Q-values) for significance cutoff."
+
+  - name: "volcano_plot_raw"
+    path: "volcano_plot_raw.html"
+    type: "html"
+    format: "html"
+    description: "Volcano plot using raw p-values for significance cutoff."
 
   - name: "scatter_plots"
     path: "scatter_plots.html"
@@ -156,11 +162,12 @@ execution:
 example:
   enabled: true
   values:
-    input_file: "diann/imputed.data.txt"
+    input_file: "diann/imputed.data.small.txt"
     annotation_file: "diann/annotation_with_score.txt"
     index_col: "Protein.Group"
     target_cols: "Score"
     grouping_col: "Condition"
     imputation: "mean"
+    num_resamples: 19
     alpha: 0.05
     log2_transform: true
