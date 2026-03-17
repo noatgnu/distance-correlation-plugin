@@ -113,24 +113,6 @@ outputs:
     format: "tsv"
     description: "Filtered results showing only significant correlations."
 
-  - name: "volcano_plot_adjusted"
-    path: "volcano_plot_adjusted.html"
-    type: "html"
-    format: "html"
-    description: "Volcano plot using FDR-adjusted p-values (Q-values) for significance cutoff."
-
-  - name: "volcano_plot_raw"
-    path: "volcano_plot_raw.html"
-    type: "html"
-    format: "html"
-    description: "Volcano plot using raw p-values for significance cutoff."
-
-  - name: "scatter_plots"
-    path: "scatter_plots.html"
-    type: "html"
-    format: "html"
-    description: "Scatter plots showing protein abundance vs target for top significant proteins."
-
   - name: "ranked_correlations"
     path: "ranked_correlations.html"
     type: "html"

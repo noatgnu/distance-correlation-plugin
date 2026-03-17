@@ -5,9 +5,7 @@ import os
 import click
 import numpy as np
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from scipy.spatial.distance import pdist, squareform
 from sklearn.impute import SimpleImputer, KNNImputer
 from statsmodels.stats.multitest import multipletests
@@ -355,95 +353,6 @@ def apply_fdr_correction(
     return results
 
 
-def generate_scatter_plots(
-    data: pd.DataFrame,
-    annotation: pd.DataFrame,
-    results: pd.DataFrame,
-    index_col: str,
-    target_cols: list[str],
-    output_dir: str,
-    top_n: int = 9
-):
-    """Generate scatter plots for top significant proteins."""
-    sig_results = results[results['Significant'] == True].nsmallest(top_n, 'P_Value')
-
-    if len(sig_results) == 0:
-        return
-
-    sample_col = None
-    for col in annotation.columns:
-        if col.lower() == 'sample':
-            sample_col = col
-            break
-
-    if sample_col is None:
-        return
-
-    if index_col in data.columns:
-        data = data.set_index(index_col)
-
-    target_col = target_cols[0] if target_cols else None
-    if target_col is None:
-        return
-
-    n_plots = len(sig_results)
-    n_cols = min(3, n_plots)
-    n_rows = (n_plots + n_cols - 1) // n_cols
-
-    fig = make_subplots(
-        rows=n_rows, cols=n_cols,
-        subplot_titles=[str(p)[:30] for p in sig_results['Protein'].tolist()]
-    )
-
-    for idx, (_, row) in enumerate(sig_results.iterrows()):
-        protein = row['Protein']
-        dcor_val = row['Distance_Correlation']
-        p_val = row['P_Value']
-        r_idx = idx // n_cols + 1
-        c_idx = idx % n_cols + 1
-
-        if protein not in data.index:
-            continue
-
-        protein_values = data.loc[protein]
-
-        plot_data = []
-        for _, ann_row in annotation.iterrows():
-            sample = ann_row[sample_col]
-            if sample in protein_values.index:
-                val = protein_values[sample]
-                target_val = ann_row[target_col]
-                if pd.notna(val) and pd.notna(target_val):
-                    plot_data.append({'abundance': val, 'target': float(target_val)})
-
-        if not plot_data:
-            continue
-
-        plot_df = pd.DataFrame(plot_data)
-
-        fig.add_trace(
-            go.Scatter(
-                x=plot_df['target'],
-                y=plot_df['abundance'],
-                mode='markers',
-                marker=dict(size=8, opacity=0.7, color='#9b59b6'),
-                name=str(protein)[:20],
-                showlegend=False,
-                hovertemplate=f'dCor={dcor_val:.3f}, p={p_val:.2e}<extra></extra>'
-            ),
-            row=r_idx, col=c_idx
-        )
-
-    fig.update_layout(
-        title=f'Top {len(sig_results)} Significant Distance Correlations',
-        template='plotly_white',
-        height=350 * n_rows,
-        width=350 * n_cols
-    )
-
-    fig.write_html(os.path.join(output_dir, 'scatter_plots.html'))
-
-
 def generate_ranked_bar_plot(
     results: pd.DataFrame,
     output_dir: str,
@@ -477,95 +386,6 @@ def generate_ranked_bar_plot(
     )
 
     fig.write_html(os.path.join(output_dir, 'ranked_correlations.html'))
-
-
-def generate_volcano_plot(
-    results: pd.DataFrame,
-    output_dir: str,
-    alpha: float = 0.05,
-    suffix: str = "",
-    title_suffix: str = "",
-    use_adjusted_pvalue: bool = True
-):
-    """
-    Generate volcano plot (distance correlation vs -log10 p-value).
-
-    :param results: DataFrame with correlation results.
-    :param output_dir: Output directory path.
-    :param alpha: Significance threshold.
-    :param suffix: Filename suffix.
-    :param title_suffix: Title suffix for the plot.
-    :param use_adjusted_pvalue: If True, use Q_Value for significance cutoff; if False, use P_Value.
-    """
-    plot_df = results.copy()
-
-    if use_adjusted_pvalue:
-        pvalue_col = 'Q_Value'
-        y_label = '-log10(Adjusted P-value)'
-        plot_type = 'adjusted'
-        significance_col = plot_df['Q_Value'].fillna(1)
-    else:
-        pvalue_col = 'P_Value'
-        y_label = '-log10(P-value)'
-        plot_type = 'raw'
-        significance_col = plot_df['P_Value'].fillna(1)
-
-    plot_df['neg_log10_pvalue'] = -np.log10(plot_df[pvalue_col].clip(lower=1e-300))
-
-    plot_df['Status'] = np.where(
-        significance_col < alpha,
-        'Significant',
-        'Not Significant'
-    )
-
-    color_map = {
-        'Significant': '#e74c3c',
-        'Not Significant': '#95a5a6'
-    }
-
-    pvalue_label = "Adjusted P-value" if use_adjusted_pvalue else "P-value"
-    title = f'Volcano Plot: Distance Correlation ({pvalue_label} cutoff)'
-    if title_suffix:
-        title = f'{title} - {title_suffix}'
-
-    fig = px.scatter(
-        plot_df,
-        x='Distance_Correlation',
-        y='neg_log10_pvalue',
-        color='Status',
-        color_discrete_map=color_map,
-        hover_name='Protein',
-        hover_data={
-            'Distance_Correlation': ':.4f',
-            'P_Value': ':.2e',
-            'Q_Value': ':.2e',
-            'Status': False
-        },
-        title=title
-    )
-
-    fig.add_hline(
-        y=-np.log10(alpha),
-        line_dash="dash",
-        line_color="gray",
-        annotation_text=f"{pvalue_label} = {alpha}"
-    )
-
-    fig.update_layout(
-        xaxis_title='Distance Correlation',
-        yaxis_title=y_label,
-        template='plotly_white',
-        width=900,
-        height=700
-    )
-
-    fig.update_traces(marker=dict(size=6, opacity=0.7))
-
-    if suffix:
-        filename = f"volcano_plot_{plot_type}{suffix}.html"
-    else:
-        filename = f"volcano_plot_{plot_type}.html"
-    fig.write_html(os.path.join(output_dir, filename))
 
 
 def sanitize_filename(name: str) -> str:
@@ -618,14 +438,11 @@ def main(
 
     results = apply_fdr_correction(results, alpha=alpha)
 
-    generate_volcano_plot(results, output_dir, alpha=alpha, use_adjusted_pvalue=True)
-    generate_volcano_plot(results, output_dir, alpha=alpha, use_adjusted_pvalue=False)
     generate_ranked_bar_plot(results, output_dir)
-    generate_scatter_plots(data, annotation, results, index_col, target_col_list, output_dir)
 
     if grouping_col and grouping_col in annotation.columns:
         groups = annotation[grouping_col].dropna().unique()
-        print(f"Generating volcano plots for {len(groups)} groups in '{grouping_col}'")
+        print(f"Calculating correlations for {len(groups)} groups in '{grouping_col}'")
 
         for group in groups:
             group_samples = annotation[annotation[grouping_col] == group][sample_column_name].tolist()
@@ -643,24 +460,6 @@ def main(
                     sample_indices=group_samples
                 )
                 group_results = apply_fdr_correction(group_results, alpha=alpha)
-
-                suffix = f"_{sanitize_filename(group)}"
-                generate_volcano_plot(
-                    group_results,
-                    output_dir,
-                    alpha=alpha,
-                    suffix=suffix,
-                    title_suffix=str(group),
-                    use_adjusted_pvalue=True
-                )
-                generate_volcano_plot(
-                    group_results,
-                    output_dir,
-                    alpha=alpha,
-                    suffix=suffix,
-                    title_suffix=str(group),
-                    use_adjusted_pvalue=False
-                )
 
                 group_results['Group'] = group
                 group_results.to_csv(
